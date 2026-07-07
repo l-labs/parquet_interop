@@ -1,0 +1,22 @@
+# l-parquet — Apache Parquet reader/writer for L, loaded via `2:`.
+# cdylib only: the L host binary dlopens the library; the host ABI symbols
+# (ktn, sn, ...) resolve against the host process at load time.
+[package]
+name = "l-parquet"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Apache Parquet reader/writer for L (bind via 2:)"
+
+[lib]
+name = "l_parquet"
+crate-type = ["cdylib"]
+
+[dependencies]
+# arrow-rs does all Parquet format work; matching major versions required.
+arrow = "55"
+parquet = { version = "55", features = ["arrow", "zstd", "snap", "lz4"] }
+
+[profile.release]
+lto = true              # single cdylib: cross-crate inlining pays for itself
+codegen-units = 1       # smaller, faster code; build time is irrelevant here
