@@ -6,7 +6,8 @@ import math
 
 import pyarrow.parquet as pq
 
-t = pq.read_table("/tmp/pq_l_written.parquet")
+F = "/tmp/pq_l_written.parquet"
+t = pq.read_table(F)
 s = t.schema
 
 # Schema: the L→Parquet type map, including timestamp[ns] for KP and
@@ -41,5 +42,23 @@ assert d["dn"][2] == dt.timedelta(seconds=3), d["dn"]
 
 # No NaN smuggled through where nulls were intended.
 assert not any(isinstance(v, float) and math.isnan(v) for v in d["b"])
+
+# The DEFAULT write is UNCOMPRESSED with light column encodings: no
+# block codec, dictionary-encoded symbols, DELTA for the integral and
+# temporal columns, PLAIN for the floats, RLE for the booleans.  All of
+# it is ordinary Parquet — pyarrow decoded every column above.
+m = pq.ParquetFile(F).metadata
+rg = m.row_group(0)
+cols = {rg.column(i).path_in_schema: rg.column(i)
+        for i in range(rg.num_columns)}
+assert {c.compression for c in cols.values()} == {"UNCOMPRESSED"}, \
+    {c.compression for c in cols.values()}
+assert "RLE_DICTIONARY" in cols["s"].encodings, cols["s"].encodings
+assert "DELTA_BINARY_PACKED" in cols["a"].encodings, cols["a"].encodings
+assert "PLAIN" in cols["b"].encodings, cols["b"].encodings
+assert cols["bl"].encodings == ("RLE",), cols["bl"].encodings
+# Chunk statistics are on by default: min/max/null_count for every one.
+assert all(c.statistics is not None for c in cols.values())
+assert cols["a"].statistics.null_count == 1, cols["a"].statistics
 
 print("check_l_written: all assertions passed")

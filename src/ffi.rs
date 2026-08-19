@@ -31,7 +31,10 @@ pub const KD: i16 = 14;                                                         
 pub const KZ: i16 = 15;                                                         // datetime (f64 days since 2000)
 pub const KN: i16 = 16;                                                         // timespan (ns, no epoch)
 pub const KT: i16 = 19;                                                         // time (ms since midnight)
+pub const KJL: i16 = 39;                                                        // INLINE long atom (KJ|32): value in the
+                                                                                // low 58 bits, no heap cell (host KJL)
 pub const XT: i16 = 98;                                                         // table (flip of a column dict)
+pub const XD: i16 = 99;                                                         // dict (payload is [keys;vals])
 
 // ── Null sentinels ──────────────────────────────────────────────────────
 pub const NI: i32 = i32::MIN;                                                   // 0Ni — int/date/time null
@@ -72,10 +75,45 @@ pub unsafe fn vn(x: K) -> i64 {
 
 /// Legacy SIGNED type: atom → -tag, heap → subtype.  Ported extensions
 /// keep their `kt(x) == -KS` / `== KS` checks unchanged this way.
+/// KJL (the inline long form) reports as -KJ — the host's own `tgn`
+/// rule — so callers never have to know which form a long arrived in.
 #[inline]
 pub unsafe fn kt(x: K) -> i16 {
     let t = vtag(x);
-    if t != 0 { -t } else { vt(x) }
+    if t == KJL {
+        -KJ
+    } else if t != 0 {
+        -t
+    } else {
+        vt(x)
+    }
+}
+
+/// Value bits of a tagged K ATOM (host `kjv`): a KJL carries its long
+/// INLINE, sign-extended from bit 57; KJ/KF/KZ/KP/KN keep an 8-byte
+/// heap cell; every narrower type packs into the low 58 bits.
+#[inline]
+pub unsafe fn kjv(x: K) -> i64 {
+    const HALF: u64 = 1 << 57;                                                  // the inline window's half-width
+    match vtag(x) {
+        KJL => (((x & PTR_MASK) ^ HALF) as i64).wrapping_sub(HALF as i64),
+        KJ | KF | KZ | KP | KN => *(va(x) as *const i64),
+        _ => (x & PTR_MASK) as i64,
+    }
+}
+
+/// An INTEGRAL atom's value as i64, or None when x is not one.  `kjv`
+/// answers a narrow atom with its RAW low 58 bits, so KI/KH have their
+/// sign put back at their own width here — otherwise `-1i` would arrive
+/// as 4294967295.  This is the one place that knows that rule.
+#[inline]
+pub unsafe fn atom_i64(x: K) -> Option<i64> {
+    match vtag(x) {
+        KJL | KJ => Some(kjv(x)),
+        KI => Some(kjv(x) as u32 as i32 as i64),
+        KH => Some(kjv(x) as u16 as i16 as i64),
+        _ => None,
+    }
 }
 
 /// Element count with the atom-counts-as-1 convention.
@@ -91,47 +129,36 @@ pub unsafe fn ls(x: K) -> *const c_char {
 }
 
 // ── Typed payload views (host vG/vI/vJ/... macros) ─────────────────────
-#[inline]
-pub fn v_g(x: K) -> *mut u8 {
-    va(x)
+// One shape eight times over, so it is spelled once: the payload base
+// re-read as the element type the L vector holds.
+macro_rules! views {
+    ($($n:ident $t:ty,)*) => {
+        $(#[inline]
+        pub fn $n(x: K) -> *mut $t {
+            va(x) as *mut $t
+        })*
+    };
 }
-#[inline]
-pub fn v_h(x: K) -> *mut i16 {
-    va(x) as *mut i16
-}
-#[inline]
-pub fn v_i(x: K) -> *mut i32 {
-    va(x) as *mut i32
-}
-#[inline]
-pub fn v_j(x: K) -> *mut i64 {
-    va(x) as *mut i64
-}
-#[inline]
-pub fn v_e(x: K) -> *mut f32 {
-    va(x) as *mut f32
-}
-#[inline]
-pub fn v_f(x: K) -> *mut f64 {
-    va(x) as *mut f64
-}
-#[inline]
-pub fn v_s(x: K) -> *mut *mut c_char {
-    va(x) as *mut *mut c_char
-}
-#[inline]
-pub fn v_k(x: K) -> *mut K {
-    va(x) as *mut K
+views! {
+    v_g u8,                                                                     // vG: byte, boolean, char
+    v_h i16,                                                                    // vH: short
+    v_i i32,                                                                    // vI: int, date, time
+    v_j i64,                                                                    // vJ: long, timestamp, timespan
+    v_e f32,                                                                    // vE: real
+    v_f f64,                                                                    // vF: float, datetime
+    v_s *mut c_char,                                                            // vS: interned symbol pointers
+    v_k K,                                                                      // vK: K slots of a list/dict/table
 }
 
 // ── Host functions (resolved from the L process at dlopen time) ────────
 extern "C" {
-    pub fn ktn(t: i32, n: i32) -> K;                                            // typed vector of n elements
+    pub fn ktn(t: i32, n: i64) -> K;                                            // K ktn(I,J): typed vector of n elements
+    pub fn kpn(s: *const c_char, n: i64) -> K;                                  // K kpn(S,J): char vector from ptr+len
     pub fn kj(x: i64) -> K;                                                     // long atom constructor
     pub fn xD(keys: K, vals: K) -> K;                                           // dict from keys + values
     pub fn xT(dict: K) -> K;                                                    // table from a column dict
-    pub fn sn(s: *const c_char, n: i32) -> *mut c_char;                         // intern n bytes
-    pub fn nt(t: u32) -> i64;                                                   // storage byte width by type tag
+    pub fn sn(s: *const c_char, n: i32) -> *mut c_char;                         // S sn(S,I): intern n bytes
+    pub fn nt(t: u32) -> i64;                                                   // J nt(UI): storage byte width by tag
     pub fn r1(x: K) -> K;                                                       // retain (refcount++)
     pub fn r0(x: K);                                                            // release (refcount--/free)
     pub fn krr(msg: *const c_char) -> K;                                        // raise an error from a string
@@ -151,4 +178,32 @@ pub fn err(msg: &str) -> K {
 #[inline]
 pub unsafe fn intern(bytes: &[u8]) -> *mut c_char {
     sn(bytes.as_ptr() as *const c_char, bytes.len() as i32)
+}
+
+/// Mixed list (type 0) whose slots are the K values in `v`.  The list
+/// TAKES OWNERSHIP: every element is moved in, so the caller must not
+/// release them afterwards — one r0 of the list frees the whole tree.
+pub unsafe fn klist(v: &[K]) -> K {
+    let r = ktn(0, v.len() as i64);
+    for (i, x) in v.iter().enumerate() {
+        *v_k(r).add(i) = *x;
+    }
+    r
+}
+
+/// Symbol vector interning each byte slice `it` yields, in order.
+pub unsafe fn ksyms<'a, I>(it: I) -> K
+where
+    I: ExactSizeIterator<Item = &'a [u8]>,
+{
+    let r = ktn(KS as i32, it.len() as i64);
+    for (i, b) in it.enumerate() {
+        *v_s(r).add(i) = intern(b);
+    }
+    r
+}
+
+/// Char vector (KC) holding `b` verbatim — the host copies the bytes.
+pub unsafe fn kchars(b: &[u8]) -> K {
+    kpn(b.as_ptr() as *const c_char, b.len() as i64)
 }

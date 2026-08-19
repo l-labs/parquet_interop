@@ -1,0 +1,6 @@
+# The layout of this crate is HAND-MAINTAINED house style: code in
+# columns 1-80, `//` at column 81, and macro bodies and const tables laid
+# out as tables rather than as rustfmt would rewrap them.  One `cargo fmt`
+# would collapse every one of those, so formatting is turned off outright
+# — rustfmt reads this file, and so does rust-analyzer's format-on-save.
+disable_all_formatting = true

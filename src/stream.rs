@@ -13,9 +13,23 @@
 //! Both layouts put the count in a fixed slot, so streaming appends raw
 //! chunk after raw chunk and PATCHES the count once at the end — no
 //! rewrite, no buffering of more than one Arrow batch.
+//!
+//! The decode itself is read.rs's: the same footer (parsed once, with
+//! the symbol dictionary hint applied), the same converters, the same
+//! symbol cache — carried across row groups here, so a symbol seen in
+//! group 0 is never re-interned in group 99.
+//!
+//! The directory is built BESIDE `dst` and renamed over it, the way
+//! `pq_write` builds its file: a splay is only a table once its counts
+//! are patched, and a stream that dies half way would otherwise leave a
+//! `.d` naming every column beside column files whose headers still say
+//! zero rows — which `get`/`\l` load, silently, as an empty table.  So
+//! a failed stream leaves the PREVIOUS splay exactly as it was, and a
+//! successful one REPLACES it whole: no column file from an earlier
+//! schema survives into the new table.
 
 use crate::ffi::*;
-use crate::read::{l_type_of, BATCH_ROWS};
+use crate::read::{fill_col, SymCache, BATCH_ROWS};
 use crate::Ctx;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::ffi::CStr;
@@ -30,12 +44,15 @@ fn hdr_fixed(f: &mut File, lt: i16) -> Result<(), String> {
     f.write_all(&h).ctx("pq_stream")
 }
 
-/// Start a symbol column (or .d) file: 0xFF01 header, count 0 for now.
-fn hdr_syms(f: &mut File) -> Result<(), String> {
+/// Start a symbol column (or .d) file: 0xFF01 header holding `n`.  A
+/// column file passes 0 and patches the total in afterwards; `.d`
+/// knows its count before a byte is written and passes it here.
+fn hdr_syms(f: &mut File, n: i32) -> Result<(), String> {
     let mut h = [0u8; 8];
     h[0] = 0xFF;
     h[1] = 0x01;
     h[2..4].copy_from_slice(&KS.to_le_bytes());
+    h[4..8].copy_from_slice(&n.to_le_bytes());
     f.write_all(&h).ctx("pq_stream")
 }
 
@@ -77,79 +94,83 @@ unsafe fn append_chunk(
 
 /// Stream Parquet `src` → splayed table directory `dst`; returns rows.
 pub fn stream_table(src: &str, dst: &str) -> Result<i64, String> {
-    let file = File::open(src).ctx(&format!("pq_stream: {src}"))?;
-    let bld = ParquetRecordBatchReaderBuilder::try_new(
-        file.try_clone().ctx("pq_stream")?,
-    )
-    .ctx("pq_stream")?;
-    let schema = bld.schema().clone();
-    let n_rg = bld.metadata().num_row_groups();
-    let total_meta: i64 = (0..n_rg)
-        .map(|g| bld.metadata().row_group(g).num_rows())
-        .sum();
-    if total_meta > i32::MAX as i64 {
+    let who = "pq_stream";
+    let files = [(src.to_string(), src.to_string())];
+    let set = crate::meta::open(&files, who)?;
+    let s0 = &set.srcs[0];
+    if s0.rg_rows.iter().sum::<i64>() > i32::MAX as i64 {
         // The 0xFF01 symbol header stores an i32 count and L vectors
         // are 2^31-bounded — refuse rather than write a corrupt splay.
-        return Err("pq_stream: >2^31 rows".into());
+        return Err(format!("{who}: >2^31 rows"));
     }
-    drop(bld);
-    let nc = schema.fields().len();
-    let mut lts = Vec::with_capacity(nc);
-    for f in schema.fields() {
+    let mut lts = Vec::with_capacity(set.lts.len());
+    for t in &set.lts {
         // Validate the whole schema before touching the filesystem.
-        lts.push(l_type_of(f.data_type())?);
+        lts.push(t.clone()?);
     }
-    std::fs::create_dir_all(dst).ctx(&format!("pq_stream: {dst}"))?;
+    let nc = lts.len();
+    // One spelling of dst from here on: a trailing `/` would make the
+    // rename below name a path that does not exist yet, which POSIX
+    // refuses (a trailing slash demands an existing directory).
+    let dst = dst.trim_end_matches('/');
+    if dst.is_empty() {
+        return Err(format!("{who}: empty destination"));
+    }
+    // A dst that exists and is not a directory is refused BEFORE any
+    // work: create_dir_all used to answer that, and the build-beside
+    // -and-rename below would otherwise only find out at the very end.
+    if std::fs::metadata(dst).is_ok_and(|m| !m.is_dir()) {
+        return Err(format!("{who}: {dst}: not a directory"));
+    }
+    let (tmp, mut scratch) = crate::Scratch::new(dst, true);
+    std::fs::create_dir_all(&tmp).ctx(&format!("{who}: {dst}"))?;
     // .d — the splay manifest: a symbol vector of column names.
-    let mut df = File::create(format!("{dst}/.d"))
-        .ctx("pq_stream: .d")?;
-    hdr_syms(&mut df)?;
-    for f in schema.fields() {
-        df.write_all(f.name().as_bytes())
+    let mut df = File::create(format!("{tmp}/.d")).ctx("pq_stream: .d")?;
+    hdr_syms(&mut df, nc as i32)?;
+    for n in &set.names {
+        df.write_all(n.as_bytes())
             .and_then(|_| df.write_all(&[0]))
             .ctx("pq_stream: .d")?;
     }
-    patch_count(&mut df, true, nc as i64)?;
     // Column files: header now, count patched after the last chunk.
     let mut cfs = Vec::with_capacity(nc);
-    for (c, f) in schema.fields().iter().enumerate() {
-        let mut cf = File::create(format!("{dst}/{}", f.name()))
-            .ctx("pq_stream: col")?;
+    for (c, n) in set.names.iter().enumerate() {
+        let mut cf =
+            File::create(format!("{tmp}/{n}")).ctx("pq_stream: col")?;
         if lts[c] == KS {
-            hdr_syms(&mut cf)?;
+            hdr_syms(&mut cf, 0)?;
         } else {
             hdr_fixed(&mut cf, lts[c])?;
         }
         cfs.push(cf);
     }
+    let mut sy = SymCache::new();
     let mut total = 0i64;
-    for rg in 0..n_rg {
-        // A fresh builder per row group: build() consumes it, and
-        // with_row_groups is what bounds memory to one group.
-        let rdr = ParquetRecordBatchReaderBuilder::try_new(
-            file.try_clone().ctx("pq_stream")?,
-        )
-        .ctx("pq_stream")?
-        .with_row_groups(vec![rg])
-        .with_batch_size(BATCH_ROWS)
-        .build()
-        .ctx("pq_stream")?;
+    for rg in 0..s0.rg_rows.len() {
+        // A fresh reader per row group — with_row_groups is what bounds
+        // memory to one group — but over the footer parsed at open.
+        let f = File::open(&s0.path).ctx(&format!("{who}: {}", s0.path))?;
+        let rdr =
+            ParquetRecordBatchReaderBuilder::new_with_metadata(
+                f,
+                s0.md.clone(),
+            )
+            .with_row_groups(vec![rg])
+            .with_batch_size(BATCH_ROWS)
+            .build()
+            .ctx(who)?;
         for b in rdr {
-            let b = b.ctx("pq_stream")?;
+            let b = b.ctx(who)?;
             let nr = b.num_rows();
             unsafe {
                 for c in 0..nc {
                     // Reuse the read-path converter for ONE batch: a
                     // transient L vector, spilled to disk, released.
-                    let col = ktn(lts[c] as i32, nr as i32);
-                    let r = crate::read::fill_one(
-                        lts[c],
-                        col,
-                        b.column(c),
-                    )
-                    .and_then(|_| {
-                        append_chunk(&mut cfs[c], lts[c], col, nr)
-                    });
+                    let col = ktn(lts[c] as i32, nr as i64);
+                    let r = fill_col(lts[c], col, 0, b.column(c), &mut sy)
+                        .and_then(|_| {
+                            append_chunk(&mut cfs[c], lts[c], col, nr)
+                        });
                     r0(col);
                     r?;
                 }
@@ -160,5 +181,14 @@ pub fn stream_table(src: &str, dst: &str) -> Result<i64, String> {
     for c in 0..nc {
         patch_count(&mut cfs[c], lts[c] == KS, total)?;
     }
+    drop(cfs);
+    drop(df);
+    // Every count is patched, so the directory is a table now: replace
+    // dst with it.  Removing first, then renaming, is what `pq_write`
+    // does for the same reason — rename(2) will not put a directory
+    // onto a non-empty one.
+    let _ = std::fs::remove_dir_all(dst);                                       // ENOENT is the normal case
+    std::fs::rename(&tmp, dst).ctx(&format!("{who}: {dst}"))?;
+    scratch.keep();
     Ok(total)
 }

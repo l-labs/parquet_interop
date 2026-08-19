@@ -5,9 +5,12 @@
 / Run from the repo root: l tests/test_leak.q   (L_STRESS=1 for 3x)
 
 p:"target/release/libl_parquet"
-pr:hsym[`$p] 2: (`pq_read; 1)
-pw:hsym[`$p] 2: (`pq_write; 1)
-ps:hsym[`$p] 2: (`pq_stream; 1)
+/ 2: arity: kdb writes `1`, some L builds want `1i` — try both so the
+/ suite runs unchanged on either host.
+LD:{[f] .[{hsym[`$y] 2: (x;1)};(f;p);{[f;e] hsym[`$p] 2: (f;1i)}[f]]}
+pr:LD`pq_read
+pw:LD`pq_write
+ps:LD`pq_stream
 
 pass:0; fail:0
 T:{[nm;ok] $[ok;pass+:1;fail+:1]; show $[ok;"  PASS ";"  FAIL "],nm}
@@ -22,11 +25,17 @@ md:([]a:"j"$til 50000;f:50000?1.0;s:50000?`x`y`z`w)
 pw (md;`:/tmp/pq_deep_leak_md.parquet)
 `:/tmp/pq_deep_leak_bad.parquet 0: enlist "this is not a parquet file"
 
+/ options are parsed on every call: the opts dict, its codec symbol and
+/ the rejected-key error path all have to leave the heap where they
+/ found it, so the loop exercises all three.
+oz:(`codec`level`rg)!(`zstd;1;1000)
 one:{[i]
   t:pr `:/tmp/pq_deep_leak_sm.parquet;
   pw (t;`:/tmp/pq_deep_leak_out.parquet);
+  pw (t;`:/tmp/pq_deep_leak_opt.parquet;oz);
   e:@[pr;`:/tmp/pq_deep_leak_bad.parquet;{x}];
   e2:@[pw;42;{x}];
+  e3:@[pw;(t;`:/tmp/pq_deep_leak_opt.parquet;(enlist`nope)!enlist 1);{x}];
   $[0=i mod 25;
     [tm:pr `:/tmp/pq_deep_leak_md.parquet;
      pw (tm;`:/tmp/pq_deep_leak_out2.parquet);

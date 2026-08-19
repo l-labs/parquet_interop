@@ -4,9 +4,12 @@
 / Run from the repo root: l tests/test_edge.q
 
 p:"target/release/libl_parquet"
-pr:hsym[`$p] 2: (`pq_read; 1)
-pw:hsym[`$p] 2: (`pq_write; 1)
-ps:hsym[`$p] 2: (`pq_stream; 1)
+/ 2: arity: kdb writes `1`, some L builds want `1i` — try both so the
+/ suite runs unchanged on either host.
+LD:{[f] .[{hsym[`$y] 2: (x;1)};(f;p);{[f;e] hsym[`$p] 2: (f;1i)}[f]]}
+pr:LD`pq_read
+pw:LD`pq_write
+ps:LD`pq_stream
 
 pass:0; fail:0
 T:{[nm;ok] $[ok;pass+:1;fail+:1]; show $[ok;"  PASS ";"  FAIL "],nm}
@@ -103,6 +106,9 @@ pw (tu;`:/tmp/pq_edge_u.parquet)
 c:ps (`:/tmp/pq_edge_u.parquet;`:/tmp/pq_edge_splayu)
 T["stream unicode syms rows";3=c]
 T["stream unicode splay read-back";tu~get `:/tmp/pq_edge_splayu]
+/ a dst spelled with a trailing / still names the same directory
+c:ps (`:/tmp/pq_edge_u.parquet;`$":/tmp/pq_edge_splayu2/")
+T["stream dst with a trailing slash";tu~get `:/tmp/pq_edge_splayu2]
 `:/tmp/pq_edge_afile 0: enlist "occupied"
 e:E[ps;(`:/tmp/pq_edge_u.parquet;`:/tmp/pq_edge_afile)]
 T["stream dst is a file";(10=type e)and"pq_stream"~9#e]

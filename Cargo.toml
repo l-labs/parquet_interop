@@ -14,8 +14,24 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # arrow-rs does all Parquet format work; matching major versions required.
-arrow = "55"
-parquet = { version = "55", features = ["arrow", "zstd", "snap", "lz4"] }
+#
+# PINNED to 55.2.x, and not as caution about the API.  read.rs decodes
+# fixed-width columns into a Vec built over the HOST's memory, and what
+# makes that sound is an INTERNAL invariant of these two crates that no
+# API change has to announce — `raw_col` in src/read.rs states it in
+# full.  A version bump is a deliberate act that re-reads `raw_col`.
+arrow = "=55.2"
+parquet = { version = "=55.2", features = ["arrow", "zstd", "snap", "lz4"] }
+# Profiling only, and only when asked for: see [features] below.
+hotpath = { version = "0.23", optional = true, default-features = false }
+
+[features]
+# `--features hotpath` turns the `hp!` guards and the `#[cfg_attr(...,
+# hotpath::measure)]` annotations into live per-function timing, printed
+# when the entry point returns; `hotpath-alloc` adds allocation bytes.
+# The default build has neither the dependency nor the code.
+hotpath = ["dep:hotpath", "hotpath/hotpath"]
+hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 
 [profile.release]
 lto = true              # single cdylib: cross-crate inlining pays for itself
