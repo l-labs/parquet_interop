@@ -343,7 +343,7 @@ path` / `expected column symbol` for a wrong argument shape, `symbol
 utf8` for a symbol whose bytes are not UTF-8, and `nyi: column type …`
 for a column with no L type. The rest name the file.
 
-## Caveats (by design, asserted by the suite)
+## Caveats (Open issue if these become an actual issue for you)
 
 - **Sentinel collision**: a Parquet file can hold VALID values equal to
   L's null bit patterns — i64 `-2^63`, i32 `-2^31`, i16 `-2^15`, f64
