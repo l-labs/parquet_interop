@@ -164,6 +164,14 @@ extern "C" {
     pub fn krr(msg: *const c_char) -> K;                                        // raise an error from a string
 }
 
+/// The L plugin witness (l.h `l_abi`): `2:` binds a library that exports
+/// it against the host above; one without it is taken for a kdb+ k.h
+/// library and routed through the k.h shim, where these names are absent.
+#[no_mangle]
+pub extern "C" fn l_abi() -> i32 {
+    1
+}
+
 /// Raise an L error carrying `msg`.  krr keeps the pointer without
 /// copying, so the CString is deliberately LEAKED: the error path is
 /// rare and messages are tiny — a leak is the only way to guarantee the
