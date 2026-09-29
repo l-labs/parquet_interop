@@ -84,9 +84,8 @@ unsafe fn append_chunk(
         }
         Ok(())
     } else {
-        // Fixed width: raw payload bytes; nt() is the host's
-        // authoritative storage width per type tag.
-        let w = nt(lt as u32) as usize;
+        // Fixed width: raw payload bytes, `width(lt)` per element.
+        let w = width(lt);
         let raw = std::slice::from_raw_parts(v_g(col), nr * w);
         f.write_all(raw).ctx("pq_stream")
     }

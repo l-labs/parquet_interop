@@ -36,6 +36,49 @@ n:.pq.stream (`:/tmp/huge.parquet; `:/tmp/db/t)  / splay, 1 row group DRAM
 Every export takes ONE argument, so a multi-argument call passes a list
 (`.pq.write (t;path)`, never `.pq.write[t;path]`).
 
+## Installing
+
+The library is a native L plugin: it exports `l_abi`, and `2:` binds a
+library that does directly against the running L. It needs **none** of
+the kdb+ compatibility libraries (`kdbabi.so`, `kdbk0v2.so`,
+`kdbk0v3.so`); L uses those only for a kdb+ `k.h` extension, which it
+recognises by the missing `l_abi`. A build from before `l_abi` was
+exported is taken for one and fails to load: `undefined symbol: nt` on
+Linux, `kdb2:half` on macOS, or a missing `kdbabi.so` where none is
+installed.
+
+Where `2:` looks for `` `:name `` (it always appends `.so`, on macOS too):
+
+- a name with a `/` in it — `` `:target/release/libl_parquet ``,
+  `` `:./libl_parquet ``, `` `:/opt/l/libl_parquet `` — is opened as
+  written, relative to the current directory;
+- a bare name — `` `:libl_parquet `` — is opened from
+  `$ELLEHOME/l64/` on Linux, `$ELLEHOME/m64/` on macOS, where
+  `$ELLEHOME` defaults to `~/elle`. On Linux, do not also keep a
+  same-named file in the current directory: a bare name that exists
+  there fails to load; spell it `` `:./libl_parquet `` instead.
+
+So to load it by bare name from any directory:
+
+```sh
+cargo build --release
+# Linux
+mkdir -p ~/elle/l64 && cp target/release/libl_parquet.so ~/elle/l64/
+# macOS
+mkdir -p ~/elle/m64
+cp target/release/libl_parquet.dylib ~/elle/m64/libl_parquet.so
+```
+
+```q
+.pq.read: `:libl_parquet 2: (`pq_read; 1)    / and so on for the others
+```
+
+When you do need the kdb+ compatibility libraries (for kdb+
+extensions, not this one), `kdbabi.so` is found by the same bare-name
+rule, so install all three together in `$ELLEHOME/l64/` (`m64/` on
+macOS): `kdbk0v2.so` and `kdbk0v3.so` are loaded from beside
+`kdbabi.so`.
+
 ## Reading: projection, row-group windows, many files
 
 ```q
@@ -295,6 +338,8 @@ the same file went from 1.74 ms to 0.084 ms per call.
 ## Tests
 
 ```sh
+sh tests/check_abi.sh                          # l_abi exported; host
+                                               #   imports k.h-named only
 uv run --with pyarrow tests/make_fixtures.py   # interop fixtures (13-16)
 l tests/test_parquet.q                         # 22 assertions, repo root
 uv run --with pyarrow tests/check_l_written.py # pyarrow reads L's output

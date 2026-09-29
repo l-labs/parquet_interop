@@ -1,6 +1,6 @@
 #!/bin/sh
 # run_all.sh — the whole deep suite, in order:
-#   baseline (22)  ->  W1 read surface  ->  (dictionary;codes) ->
+#   ABI symbols -> baseline (22) -> W1 read surface  ->  (dictionary;codes) ->
 #   writer options/codecs/
 #   encodings (L side, then pyarrow + duckdb) -> randomized matrix +
 #   corners + hostile (gen, run, pyarrow check) -> 3 seeded shake
@@ -36,6 +36,9 @@ runq() { # runq <script> <log> <required summary substring>
         grep -E "passed, [0-9]+ failed" "$2" | tail -1
     fi
 }
+
+echo "== ABI: l_abi exported, host imports k.h-named only =="
+sh tests/check_abi.sh || fail=1
 
 echo "== baseline (existing 22) =="
 $PY tests/make_fixtures.py >"$LOG/fixtures.out" 2>&1 || fail=1

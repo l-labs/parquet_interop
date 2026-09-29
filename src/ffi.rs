@@ -158,18 +158,30 @@ extern "C" {
     pub fn xD(keys: K, vals: K) -> K;                                           // dict from keys + values
     pub fn xT(dict: K) -> K;                                                    // table from a column dict
     pub fn sn(s: *const c_char, n: i32) -> *mut c_char;                         // S sn(S,I): intern n bytes
-    pub fn nt(t: u32) -> i64;                                                   // J nt(UI): storage byte width by tag
     pub fn r1(x: K) -> K;                                                       // retain (refcount++)
     pub fn r0(x: K);                                                            // release (refcount--/free)
     pub fn krr(msg: *const c_char) -> K;                                        // raise an error from a string
 }
 
-/// The L plugin witness (l.h `l_abi`): `2:` binds a library that exports
-/// it against the host above; one without it is taken for a kdb+ k.h
-/// library and routed through the k.h shim, where these names are absent.
+/// The L plugin witness (l.h `l_abi`).  `2:` binds a library that
+/// exports it against the host, with the tagged K above; one without it
+/// is taken for a kdb+ k.h library and bound through the k.h shim
+/// (kdbabi.so), where K is a pointer and nothing here would be sound.
 #[no_mangle]
 pub extern "C" fn l_abi() -> i32 {
     1
+}
+
+/// Storage bytes per element of an L vector of type t, the widths kdb+
+/// and L share.  Kept here rather than imported, so the library
+/// needs nothing from the host beyond the k.h-named functions above.
+/// Callers pass only validated column types; anything else answers 8.
+pub fn width(t: i16) -> usize {
+    const W: [u8; 20] = [                                                       // bytes per element, by type tag:
+        8, 1, 16, 0, 1, 2, 4, 8, 4, 8,                                          // list bool guid - byte short int long real float
+        1, 8, 8, 4, 4, 8, 8, 4, 4, 4,                                           // char sym ts month date datetime timespan minute second time
+    ];
+    W.get(t as usize).map_or(8, |&w| w as usize)
 }
 
 /// Raise an L error carrying `msg`.  krr keeps the pointer without
