@@ -835,11 +835,9 @@ pub fn write_table(
             mf.push(Field::new(nm, arrow_type(t, false)?, true));
             props = set_enc(props, nm, pick(col, t, nrows, &o));
             // Bytes one row of this column occupies, for sizing the
-            // in-flight window below: `nt` is the host's own table and
-            // stream.rs already treats it as authoritative.  Only the
-            // widest column matters there, so it is a bound, not an
-            // accounting.
-            width = width.max(nt(t as u32) as usize);
+            // in-flight window below.  Only the widest column matters
+            // there, so it is a bound, not an accounting.
+            width = width.max(crate::ffi::width(t));
         }
         let schema = Arc::new(Schema::new(wf));
         let props = Arc::new(
