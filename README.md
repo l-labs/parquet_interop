@@ -15,69 +15,76 @@ the previous writer — and the writer is disk-bound at that point
 
 ## Quickstart
 
+L has Parquet built in: its `.pq` namespace (`.pq.read`, `.pq.write`,
+`.pq.stream`, `.pq.meta`, `.pq.rg`) does the querying, laziness,
+row-group pruning and streaming, and calls this library for the format
+work. Build the library and point `ELLE_PQ_LIB` at it:
+
 ```sh
 cargo build --release
-# macOS: `2:` appends .so, cargo emits .dylib — give it the name it wants
+# macOS only: L loads <name>.so, cargo emits .dylib, so copy it to that name
 cp target/release/libl_parquet.dylib target/release/libl_parquet.so
+export ELLE_PQ_LIB=$PWD/target/release/libl_parquet.so
 ```
 
 ```q
-.pq.meta:  `:target/release/libl_parquet 2: (`pq_meta;   1)
-.pq.read:  `:target/release/libl_parquet 2: (`pq_read;   1)
-.pq.rg:    `:target/release/libl_parquet 2: (`pq_rg;     1)
-.pq.write: `:target/release/libl_parquet 2: (`pq_write;  1)
-.pq.stream:`:target/release/libl_parquet 2: (`pq_stream; 1)
-
-.pq.write (([]sym:`AAPL`GOOG;price:150.5 175.3); `:/tmp/out.parquet)
-t:.pq.read `:/tmp/out.parquet
-n:.pq.stream (`:/tmp/huge.parquet; `:/tmp/db/t)  / splay, 1 row group DRAM
+t:([]sym:`AAPL`GOOG`MSFT;price:150.5 175.3 410.2)
+.pq.write[t;`:/tmp/out.parquet]
+lz:.pq.read `:/tmp/out.parquet            / lazy: only the footer is read
+select from lz where price>160            / decodes just what it needs
+.pq.stream[`:/tmp/out.parquet;`:/tmp/db/t]  / into an L splay; answers rows
 ```
 
-Every export takes ONE argument, so a multi-argument call passes a list
-(`.pq.write (t;path)`, never `.pq.write[t;path]`).
+`.pq` belongs to L, so do not assign over `.pq.*`; see L's
+documentation for the whole of it (`.pq.budget`, `.pq.st`, globs and
+lists of files, `get` on a `.parquet` path).
 
 ## Installing
 
-The library is a native L plugin: it exports `l_abi`, and `2:` binds a
-library that does directly against the running L. It needs **none** of
-the kdb+ compatibility libraries (`kdbabi.so`, `kdbk0v2.so`,
-`kdbk0v3.so`); L uses those only for a kdb+ `k.h` extension, which it
-recognises by the missing `l_abi`. A build from before `l_abi` was
-exported is taken for one and fails to load: `undefined symbol: nt` on
-Linux, `kdb2:half` on macOS, or a missing `kdbabi.so` where none is
-installed.
+`ELLE_PQ_LIB` names the library, `.so` suffix optional. The file must
+exist under its `.so` name (L raises `pq-lib` otherwise), and an
+absolute path is the one form that works from any directory. Without
+`ELLE_PQ_LIB`, L looks for `<dir>/bin/ifi/parquet/lin/libl_parquet.so`
+(`mac/` on macOS), where `<dir>` is two levels above the running
+script's directory, then the current directory. L opens the library on
+the first `.pq` call, so an L without it starts normally.
 
-Where `2:` looks for `` `:name `` (it always appends `.so`, on macOS too):
+The library is a native L plugin: it exports `l_abi`, and L binds such
+a library directly. It needs **none** of the kdb+ compatibility
+libraries (`kdbabi.so`, `kdbk0v2.so`, `kdbk0v3.so`); L uses those only
+for a kdb+ `k.h` extension, which it recognises by the missing `l_abi`.
+A build from before `l_abi` was exported is taken for one and fails to
+load: `undefined symbol: nt` on Linux, `kdb2:half` on macOS, or a
+missing `kdbabi.so` where none is installed.
 
-- a name with a `/` in it — `` `:target/release/libl_parquet ``,
-  `` `:./libl_parquet ``, `` `:/opt/l/libl_parquet `` — is opened as
-  written, relative to the current directory;
-- a bare name — `` `:libl_parquet `` — is opened from
-  `$ELLEHOME/l64/` on Linux, `$ELLEHOME/m64/` on macOS, where
-  `$ELLEHOME` defaults to `~/elle`. On Linux, do not also keep a
-  same-named file in the current directory: a bare name that exists
-  there fails to load; spell it `` `:./libl_parquet `` instead.
+## Calling the exports directly
 
-So to load it by bare name from any directory:
-
-```sh
-cargo build --release
-# Linux
-mkdir -p ~/elle/l64 && cp target/release/libl_parquet.so ~/elle/l64/
-# macOS
-mkdir -p ~/elle/m64
-cp target/release/libl_parquet.dylib ~/elle/m64/libl_parquet.so
-```
+The rest of this README documents the library's own five exports. L
+binds them as `.pq.raw.read`, `.pq.raw.write`, `.pq.raw.stream`,
+`.pq.raw.meta` and `.pq.raw.rg`. To bind them yourself with `2:`, use a
+name of your own; the examples below use `.pqi`, because `.pq` is L's:
 
 ```q
-.pq.read: `:libl_parquet 2: (`pq_read; 1)    / and so on for the others
+.pqi.meta:  `:target/release/libl_parquet 2: (`pq_meta;   1)
+.pqi.read:  `:target/release/libl_parquet 2: (`pq_read;   1)
+.pqi.rg:    `:target/release/libl_parquet 2: (`pq_rg;     1)
+.pqi.write: `:target/release/libl_parquet 2: (`pq_write;  1)
+.pqi.stream:`:target/release/libl_parquet 2: (`pq_stream; 1)
+
+.pqi.write (([]sym:`AAPL`GOOG;price:150.5 175.3); `:/tmp/out.parquet)
+t:.pqi.read `:/tmp/out.parquet
+n:.pqi.stream (`:/tmp/out.parquet; `:/tmp/db/t)  / splay, 1 row group DRAM
 ```
 
-When you do need the kdb+ compatibility libraries (for kdb+
-extensions, not this one), `kdbabi.so` is found by the same bare-name
-rule, so install all three together in `$ELLEHOME/l64/` (`m64/` on
-macOS): `kdbk0v2.so` and `kdbk0v3.so` are loaded from beside
-`kdbabi.so`.
+Every export takes ONE argument, so a multi-argument call passes a list
+(`.pqi.write (t;path)`, never `.pqi.write[t;path]`).
+
+`2:` appends `.so` (on macOS too). A name with a `/` in it, as above,
+is opened as written, relative to the current directory. A bare name
+(`` `:libl_parquet ``) is opened from `$ELLEHOME/l64/` on Linux or
+`$ELLEHOME/m64/` on macOS, where `$ELLEHOME` defaults to `~/elle`; on
+Linux, do not also keep a same-named file in the current directory,
+where a bare name fails to load: spell it `` `:./libl_parquet ``.
 
 ## Reading: projection, row-group windows, many files
 
@@ -85,16 +92,16 @@ macOS): `kdbk0v2.so` and `kdbk0v3.so` are loaded from beside
 f:`:/tmp/taq.parquet
 files:`:/tmp/db/part00.parquet`:/tmp/db/part01.parquet
 
-.pq.read f                     / whole file, columns in FILE order
-.pq.read (f;())                / same — () or ` means every column
-.pq.read (f;`sym`size)         / only these chunks are read and decoded,
+.pqi.read f                     / whole file, columns in FILE order
+.pqi.read (f;())                / same — () or ` means every column
+.pqi.read (f;`sym`size)         / only these chunks are read and decoded,
                                / result columns in the REQUESTED order
-.pq.read (files;())            / many files -> one table, one work pool
-.pq.rg   (files;`sym`size;0;8) / only global row groups [0,8)
-.pq.meta files                 / footers only: no page is decoded
+.pqi.read (files;())            / many files -> one table, one work pool
+.pqi.rg   (files;`sym`size;0;8) / only global row groups [0,8)
+.pqi.meta files                 / footers only: no page is decoded
 ```
 
-`.pq.meta` answers a dict — `` `files`cols`types`rows`rg`bytes`stats`ubytes`enc ``:
+`.pqi.meta` answers a dict — `` `files`cols`types`rows`rg`bytes`stats`ubytes`enc ``:
 
 | key | value |
 |-----|-------|
@@ -113,8 +120,8 @@ seven, and anything added later goes on the end too, so a caller that
 indexes positionally keeps working.
 
 GLOBAL row-group numbering is the concatenation order: file 0's groups,
-then file 1's, and so on — the same numbering `.pq.rg` windows into, so
-`.pq.meta` plans the loop and `.pq.rg` executes each step.
+then file 1's, and so on — the same numbering `.pqi.rg` windows into, so
+`.pqi.meta` plans the loop and `.pqi.rg` executes each step.
 
 Files read together must agree POSITIONALLY: same column names in the
 same order, each landing on the same L type (`Timestamp(us)` and
@@ -179,8 +186,8 @@ never half of one — a crash inside it leaves nothing at `path`, the
 finished data still under its `.tmp` name.
 
 ```q
-.pq.write (t; `:/tmp/out.parquet; (`codec`level)!(`zstd;3))
-.pq.write (t; `:/tmp/out.parquet; `rg`stats!(250000;0b))
+.pqi.write (t; `:/tmp/out.parquet; (`codec`level)!(`zstd;3))
+.pqi.write (t; `:/tmp/out.parquet; `rg`stats!(250000;0b))
 ```
 
 ### Encoding policy
@@ -254,9 +261,9 @@ dict that asks for it in that shape instead of as 100M interned
 pointers:
 
 ```q
-.pq.read (f; ();          (enlist`codes)!enlist 1b)   / whole file
-.pq.read (f; `sym`size;   (enlist`codes)!enlist 1b)   / projection
-.pq.rg   (f; (); 0; 8;    (enlist`codes)!enlist 1b)   / row-group window
+.pqi.read (f; ();          (enlist`codes)!enlist 1b)   / whole file
+.pqi.read (f; `sym`size;   (enlist`codes)!enlist 1b)   / projection
+.pqi.rg   (f; (); 0; 8;    (enlist`codes)!enlist 1b)   / row-group window
 ```
 
 | key | type | default | meaning |
